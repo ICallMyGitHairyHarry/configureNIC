@@ -14,7 +14,7 @@ done
 
 while :
 do
-    whiptail --title "Просмотр и настройка сетевой карты" --menu "Выберите сетевую карту. Для выхода нажмите \"Отмена\" или \"Esc\"." 11 50 2 ${nic_array[@]} 2>.selected_nic
+    whiptail --title "Просмотр и настройка сетевой карты" --menu "Выберите сетевую карту. Для выхода нажмите \"Отмена\" или \"Esc\"." 14 50 5 ${nic_array[@]} 2>.selected_nic
 
     if [ $? -ne 0 ]
     then
@@ -53,9 +53,10 @@ do
             MAC-адрес: $(sudo ethtool -P $nic | awk ' {print $3}')" 15 60;;
           2)
             whiptail --title "Конфигурация IPv4 $nic" --msgbox "\
-            IPv4/Маска: $(ip -o -f inet a show $nic | awk ' {print $4}') \n\
+            IPv4/Маска:
+            $(ip -o -f inet a show $nic | awk '{printf "%s\n            ",$4}') \n\
             Шлюз по умолчанию: $(ip route show dev $nic | grep default \
-            | awk ' {print $3}') \n\
+            | awk '{print $3}') \n\n\
             DNS (global;link): $(cat /etc/resolv.conf | awk 'NR==2 {print $2}'); $(resolvectl dns | grep $nic | awk '{print $4}' )" 15 60;;
           3)
            whiptail --title "Настройка карты $nic" --menu "Выберите способ настройки" 15 60 4 \
@@ -67,13 +68,16 @@ do
            1)
            	input_regex="^([0-9]{1,3}\.){3}[0-9]{1,3}$"
            	error_notifier=0
-           	dialog --form "Настройка карты" 15 50 0 \
+           	dialog --title "Настройка карты $nic" --form "Заполните нужные поля в формате \"?*.?*.?*.?*\". Если вы не хотите изменять определённые параметры, оставьте соответствующее поле пустым." 17 50 0 \
            	"IPv4:" 1 1 "" 1 10 30 0 \
            	"Маска:" 2 1 "" 2 10 30 0 \
            	"Шлюз:" 3 1 "" 3 10 30 0 \
            	"DNS:" 4 1 "" 4 10 30 0 2> .nic_form
            	while read line
            	do
+           		if [ -z "$line" ]
+           		then continue
+           		fi
            		if ! [[ $line =~ $input_regex ]]
            		then
 					whiptail --title "Неверный ввод!" --msgbox "Каждое поле в вода должно быть в формате \"?*.?*.?*.?*\"!" 10 30
@@ -83,16 +87,35 @@ do
            	done < .nic_form
            	if [ $error_notifier -ne 1 ]
            	then
-           		ip addr add $(sed -n '1p' .nic_form)/$(sed -n '2p' .nic_form) dev $nic
-				ip route add default via $(sed -n '3p' .nic_form) dev $nic
-				resolvectl dns $nic $(sed -n '4p' .nic_form)
-				whiptail --msgbox "Карта успешно настроена в соответствии с новыми параметрами." 10 30
+           		success_string=""
+           		ip addr add $(sed -n '1p' .nic_form)/$(sed -n '2p' .nic_form) dev $nic 2> /dev/null
+           		if [ $? -eq 0 ] 
+           		then success_string+="IPv4 и маска настроены успешно.\n"
+           		fi
+           		if ! [ -z "$(sed -n '3p' .nic_form)" ]
+           		then
+           			ip route del default dev $nic 2> /dev/null
+					ip route add default via $(sed -n '3p' .nic_form) dev $nic 2> /dev/null
+					if [ $? -eq 0 ]
+					then success_string+="Шлюз по умолчанию настроен успешно.\n"
+					fi
+				fi
+				resolvectl dns $nic $(sed -n '4p' .nic_form) > .nic_form 2> /dev/null
+				# теперь в .nic_form хранится вывод команды resolvectl, при успешной настройке этот вывод является пустой строкой.
+				if [ $? -eq 0 ] && [ -z "$(cat .nic_form)" ]
+				then success_string+="DNS настроен успешно."
+				fi
+				if [ -z "$success_string" ]
+				then success_string="Произошла ошибка при настройке карты: неверно заполнены поля формы или произошла системная ошибка."
+				fi
+				whiptail --title "Карта $nic" --msgbox "$(echo -e $success_string)" 10 40
            	fi;;
            2)
-            sudo dhclient -v $nic
+           	sudo dhclient -r &> /dev/null
+            sudo dhclient -v $nic 2>&1 | awk -v i=0 '{i+=7} {print i}' | dialog --gauge "Настройка карты $nic" 10 50 0
             if [ $? -eq 0 ]
             then
-           		whiptail --msgbox "Карта успешно настроена в соответствии с новыми параметрами." 10 30
+           		whiptail --msgbox "Карта $nic успешно настроена в соответствии с новыми параметрами." 10 30
             else
             	whiptail --msgbox "Произшла ошибка при динамической настройке." 10 30
            fi;;
